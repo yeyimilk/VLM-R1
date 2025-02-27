@@ -32,8 +32,8 @@ from torch.utils.data import Dataset
 from transformers import Qwen2VLForConditionalGeneration
 
 from math_verify import parse, verify
-from open_r1.trainer import Qwen2VLGRPOTrainer
-from trl import GRPOConfig, GRPOTrainer, ModelConfig, ScriptArguments, TrlParser, get_peft_config
+from open_r1.trainer import Qwen2VLGRPOTrainer, GRPOConfig
+from trl import ModelConfig, ScriptArguments, TrlParser, get_peft_config
 from transformers import TrainingArguments
 import yaml
 import json
@@ -265,7 +265,7 @@ def iou_reward(completions, solution, **kwargs):
         if os.getenv("DEBUG_MODE") == "true":
             log_path = os.getenv("LOG_PATH")
             # local_rank = int(os.getenv("LOCAL_RANK", 0))
-            with open(log_path, "a") as f:
+            with open(log_path, "a", encoding='utf-8') as f:
                 f.write(f"------------- {current_time} Accuracy reward: {reward} -------------\n")
                 f.write(f"Content: {content}\n")
                 f.write(f"Solution: {sol}\n")

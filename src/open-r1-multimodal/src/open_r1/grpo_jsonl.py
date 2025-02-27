@@ -23,8 +23,8 @@ from datasets import load_dataset, load_from_disk
 from transformers import Qwen2VLForConditionalGeneration
 
 from math_verify import parse, verify
-from open_r1.trainer import Qwen2VLGRPOTrainer
-from trl import GRPOConfig, GRPOTrainer, ModelConfig, ScriptArguments, TrlParser, get_peft_config
+from open_r1.trainer import Qwen2VLGRPOTrainer, GRPOConfig
+from trl import ModelConfig, ScriptArguments, TrlParser, get_peft_config
 import PIL
 from Levenshtein import ratio
 
@@ -128,7 +128,7 @@ def extract_choice(text):
     text = re.sub(r'\s+', ' ', text)  # Normalize spaces
 
     # 2. Choice should not have uppercase letters before or after
-    choices = re.findall(r'(?<![A-Z])([A-D])(?![A-Z])', text)
+    choices = re.findall(r'(?<![A-Z])([A-Z])(?![A-Z])', text)
 
     if not choices:
         return None
@@ -171,8 +171,8 @@ def extract_choice(text):
 
 def mcq_reward(content, sol, **kwargs):
     # For multiple choice, extract and compare choices
-    has_choices = re.search(r'Answer:\s*([A-Z])', sol, re.IGNORECASE)
-    correct_choice = has_choices.group(1).upper() if has_choices else sol.strip()
+    has_choices = extract_choice(sol)
+    correct_choice = has_choices.upper() if has_choices else sol.strip()
 
     # Extract answer from content if it has think/answer tags
     content_match = re.search(r'<answer>(.*?)</answer>', content, re.DOTALL)
@@ -210,14 +210,14 @@ def default_accuracy_reward(content, sol, **kwargs):
             # Check if ground truth contains numbers
             has_numbers = bool(re.search(r'\d', ground_truth))
             # Check if it's a multiple choice question
-            has_choices = re.search(r'Answer:\s*([A-D])', sol, re.IGNORECASE)
+            has_choices = extract_choice(ground_truth)
             
             if has_numbers:
                 # For numeric answers, use exact matching
                 reward = 1.0 if student_answer == ground_truth else 0.0
             elif has_choices:
                 # For multiple choice, extract and compare choices
-                correct_choice = has_choices.group(1).upper()
+                correct_choice = has_choices.upper()
                 student_choice = extract_choice(student_answer)
                 if student_choice:
                     reward = 1.0 if student_choice == correct_choice else 0.0
@@ -332,7 +332,7 @@ def main(script_args, training_args, model_args):
                 'role': 'user',
                 'content': [
                     {'type': 'image', 'text': None},
-                    {'type': 'text', 'text': example['problem'] + '  Output the thinking process in <think> </think> and final answer (number) in <answer> </answer> tags.'}
+                    {'type': 'text', 'text': example['problem'] + '  Output the thinking process in <think> </think> and final answer in <answer> </answer> tags.'}
                 ]
             }]
         }
