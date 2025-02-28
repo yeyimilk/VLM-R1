@@ -349,7 +349,7 @@ def main(script_args, training_args, model_args):
 
     # Load the JSONL datasets
     import json
-    from datasets import Dataset, Features, Value
+    from datasets import Dataset
     
     data_files = script_args.data_file_paths.split(":")
     image_folders = script_args.image_folders.split(":")
