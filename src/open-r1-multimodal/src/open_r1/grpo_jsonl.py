@@ -208,6 +208,32 @@ def yes_no_reward(content, sol, **kwargs):
 
     return reward
 
+def numeric_reward(content, sol, **kwargs):
+    content = clean_text(content)
+    sol = clean_text(sol)
+    try:
+        content, sol = float(content), float(sol)
+        return 1.0 if content == sol else 0.0
+    except:
+        return None
+
+def clean_text(text, exclue_chars=['\n', '\r']):
+    # Extract content between <answer> and </answer> if present
+    answer_match = re.search(r'<answer>(.*?)</answer>', text, re.DOTALL)
+    if answer_match:
+        text = answer_match.group(1)
+    
+    for char in exclue_chars:
+        if char in ['\n', '\r']:
+            # If there is a space before the newline, remove the newline
+            text = re.sub(r'(?<=\s)' + re.escape(char), '', text)
+            # If there is no space before the newline, replace it with a space
+            text = re.sub(r'(?<!\s)' + re.escape(char), ' ', text)
+        else:
+            text = text.replace(char, ' ')
+    
+    # Remove leading and trailing spaces and convert to lowercase
+    return text.strip().rstrip('.').lower()
 
 def default_accuracy_reward(content, sol, **kwargs):
     reward = 0.0
@@ -237,7 +263,9 @@ def default_accuracy_reward(content, sol, **kwargs):
             
             if has_numbers:
                 # For numeric answers, use exact matching
-                reward = 1.0 if student_answer == ground_truth else 0.0
+                reward = numeric_reward(student_answer, ground_truth)
+                if reward is None:
+                    reward = ratio(clean_text(student_answer), clean_text(ground_truth))
             elif has_choices:
                 # For multiple choice, extract and compare choices
                 correct_choice = has_choices.upper()
@@ -246,7 +274,7 @@ def default_accuracy_reward(content, sol, **kwargs):
                     reward = 1.0 if student_choice == correct_choice else 0.0
             else:
                 # For text answers, use fuzzy matching
-                reward = ratio(student_answer.lower(), ground_truth.rstrip(".").lower())
+                reward = ratio(clean_text(student_answer), clean_text(ground_truth))
         except Exception:
             pass  # Keep reward as 0.0 if all methods fail
 
