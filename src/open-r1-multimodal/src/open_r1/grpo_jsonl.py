@@ -219,9 +219,10 @@ def numeric_reward(content, sol, **kwargs):
 
 def clean_text(text, exclue_chars=['\n', '\r']):
     # Extract content between <answer> and </answer> if present
-    answer_match = re.search(r'<answer>(.*?)</answer>', text, re.DOTALL)
-    if answer_match:
-        text = answer_match.group(1)
+    answer_matches = re.findall(r'<answer>(.*?)</answer>', text, re.DOTALL)
+    if answer_matches:
+        # Use the last match
+        text = answer_matches[-1]
     
     for char in exclue_chars:
         if char in ['\n', '\r']:
@@ -253,8 +254,8 @@ def default_accuracy_reward(content, sol, **kwargs):
             ground_truth = sol_match.group(1).strip() if sol_match else sol.strip()
             
             # Extract answer from content if it has think/answer tags
-            content_match = re.search(r'<answer>(.*?)</answer>', content, re.DOTALL)
-            student_answer = content_match.group(1).strip() if content_match else content.strip()
+            content_matches = re.findall(r'<answer>(.*?)</answer>', content, re.DOTALL)
+            student_answer = content_matches[-1].strip() if content_matches else content.strip()
             
             # Check if ground truth contains numbers
             has_numbers = bool(re.search(r'\d', ground_truth))
