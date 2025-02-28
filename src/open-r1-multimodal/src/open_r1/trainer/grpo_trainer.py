@@ -15,7 +15,7 @@
 import os
 import textwrap
 from collections import defaultdict
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Optional, Union, Sized
 
 import torch
 import torch.utils.data
@@ -45,9 +45,12 @@ from trl.data_utils import apply_chat_template, is_conversational, maybe_apply_c
 from trl.models import create_reference_model, prepare_deepspeed, unwrap_model_for_generation
 from trl.trainer.grpo_config import GRPOConfig
 from trl.trainer.utils import generate_model_card, get_comet_experiment_url
+
+from accelerate.utils import is_peft_model
 import PIL.Image
 
 import copy
+from torch.utils.data import Sampler
 
 
 if is_peft_available():
@@ -59,6 +62,56 @@ if is_wandb_available():
 # What we call a reward function is a callable that takes a list of prompts and completions and returns a list of
 # rewards. When it's a string, it's a model ID, so it's loaded as a pretrained model.
 RewardFunc = Union[str, PreTrainedModel, Callable[[list, list], list[float]]]
+
+
+class RepeatRandomSampler(Sampler):
+    """
+    Sampler that repeats the indices of a dataset in a structured manner.
+
+    Args:
+        data_source (`Sized`):
+            Dataset to sample from.
+        mini_repeat_count (`int`):
+            Number of times to repeat each index per batch.
+        batch_size (`int`, *optional*, defaults to `1`):
+            Number of unique indices per batch.
+        repeat_count (`int`, *optional*, defaults to `1`):
+            Number of times to repeat the full sampling process.
+        seed (`int` or `None`, *optional*, defaults to `None`):
+            Random seed for reproducibility.
+    """
+
+    def __init__(
+        self,
+        data_source: Sized,
+        mini_repeat_count: int,
+        batch_size: int = 1,
+        repeat_count: int = 1,
+        seed: Optional[int] = None,
+    ):
+        self.data_source = data_source
+        self.mini_repeat_count = mini_repeat_count
+        self.batch_size = batch_size
+        self.repeat_count = repeat_count
+        self.num_samples = len(data_source)
+        self.seed = seed
+        self.generator = torch.Generator()
+        if seed is not None:
+            self.generator.manual_seed(seed)
+
+    def __iter__(self):
+        indexes = torch.randperm(self.num_samples, generator=self.generator).tolist()
+        indexes = [indexes[i : i + self.batch_size] for i in range(0, len(indexes), self.batch_size)]
+        indexes = [chunk for chunk in indexes if len(chunk) == self.batch_size]
+
+        for chunk in indexes:
+            for _ in range(self.repeat_count):
+                for index in chunk:
+                    for _ in range(self.mini_repeat_count):
+                        yield index
+
+    def __len__(self) -> int:
+        return self.num_samples * self.mini_repeat_count * self.repeat_count
 
 
 class Qwen2VLGRPOTrainer(Trainer):
@@ -211,6 +264,10 @@ class Qwen2VLGRPOTrainer(Trainer):
         if peft_config is not None:
             model = get_peft_model(model, peft_config)
 
+        # Enable gradient checkpointing if requested
+        if args.gradient_checkpointing:
+            model = self._enable_gradient_checkpointing(model, args)
+
         # Reference model
         if is_deepspeed_zero3_enabled():
             if "Qwen2-VL" in model_id:
@@ -290,6 +347,14 @@ class Qwen2VLGRPOTrainer(Trainer):
             pad_token_id=pad_token_id,
         )
         self.beta = args.beta
+        self.epsilon = args.epsilon
+
+        # Multi-step
+        self.num_iterations = args.num_iterations  # = 𝜇 in the GRPO paper
+        # Tracks the number of iterations (forward + backward passes), including those within a gradient accumulation cycle
+        self._step = 0
+        # Buffer the batch to reuse generated outputs across multiple updates
+        self._buffered_inputs = [None] * args.gradient_accumulation_steps
 
         # The trainer estimates the number of FLOPs (floating-point operations) using the number of elements in the
         # input tensor associated with the key "input_ids". However, in GRPO, the sampled data does not include the
@@ -328,6 +393,28 @@ class Qwen2VLGRPOTrainer(Trainer):
             if isinstance(reward_func, PreTrainedModel):
                 self.reward_funcs[i] = self.accelerator.prepare_model(reward_func, evaluation_mode=True)
 
+    def _enable_gradient_checkpointing(self, model: PreTrainedModel, args: GRPOConfig) -> PreTrainedModel:
+        """Enables gradient checkpointing for the model."""
+        # Ensure use_cache is disabled
+        model.config.use_cache = False
+
+        # Enable gradient checkpointing on the base model for PEFT
+        if is_peft_model(model):
+            model.base_model.gradient_checkpointing_enable()
+        # Enable gradient checkpointing for non-PEFT models
+        else:
+            model.gradient_checkpointing_enable()
+
+        gradient_checkpointing_kwargs = args.gradient_checkpointing_kwargs or {}
+        use_reentrant = (
+            "use_reentrant" not in gradient_checkpointing_kwargs or gradient_checkpointing_kwargs["use_reentrant"]
+        )
+
+        if use_reentrant:
+            model.enable_input_require_grads()
+
+        return model
+    
     def _set_signature_columns_if_needed(self):
         # If `self.args.remove_unused_columns` is True, non-signature columns are removed.
         # By default, this method sets `self._signature_columns` to the model's expected inputs.
@@ -351,15 +438,12 @@ class Qwen2VLGRPOTrainer(Trainer):
         return torch.stack(per_token_logps)
 
 
-    # Trainer "prepares" the inputs before calling `compute_loss`. It converts to tensor and move to device.
-    # Since we preprocess the data in `compute_loss`, we need to override this method to skip this step.
-    def _prepare_inputs(self, inputs: dict[str, Union[torch.Tensor, Any]]) -> dict[str, Union[torch.Tensor, Any]]:
+    def _prepare_inputs(self, inputs):
+        # Simple pass-through, just like original
         return inputs
 
-    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-        if return_outputs:
-            raise ValueError("The GRPOTrainer does not support returning outputs")
-    
+    def _generate_and_score_completions(self, inputs: dict[str, Union[torch.Tensor, Any]], model) -> dict[str, Union[torch.Tensor, Any]]:
+        device = self.accelerator.device
         prompts = [x["prompt"] for x in inputs]
         prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
         # Handle both pre-loaded images and image paths
@@ -414,7 +498,6 @@ class Qwen2VLGRPOTrainer(Trainer):
 
         # Mask everything after the first EOS token
         is_eos = completion_ids == self.processing_class.eos_token_id
-        device = self.accelerator.device
         eos_idx = torch.full((is_eos.size(0),), is_eos.size(1), dtype=torch.long, device=device)
         eos_idx[is_eos.any(dim=1)] = is_eos.int().argmax(dim=1)[is_eos.any(dim=1)]
         sequence_indices = torch.arange(is_eos.size(1), device=device).expand(is_eos.size(0), -1)
@@ -424,20 +507,30 @@ class Qwen2VLGRPOTrainer(Trainer):
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)  # (B*G, P+C)
         pixel_values = prompt_inputs["pixel_values"].repeat(self.num_generations, 1)
         image_grid_thw = prompt_inputs["image_grid_thw"].repeat_interleave(self.num_generations, dim=0)
-        per_token_logps = self._get_per_token_logps(model, prompt_completion_ids, attention_mask, pixel_values, image_grid_thw)
-        # Get rid of the prompt (-1 because of the shift done in get_per_token_logps)
-        per_token_logps = per_token_logps[:, prompt_length - 1 :]
 
-        with torch.inference_mode():
-            if self.ref_model is not None:
-                ref_per_token_logps = self._get_per_token_logps(self.ref_model, prompt_completion_ids, attention_mask, pixel_values, image_grid_thw)
+        with torch.no_grad():
+            # When using num_iterations == 1, old_per_token_logps == per_token_logps, so we can skip its
+            # computation here, and use per_token_logps.detach() instead.
+            if self.num_iterations > 1:
+                old_per_token_logps = self._get_per_token_logps(
+                    model, prompt_completion_ids, attention_mask, pixel_values, image_grid_thw
+                )
+                old_per_token_logps = old_per_token_logps[:, prompt_length - 1:]
+            else:
+                old_per_token_logps = None
+
+            if self.beta == 0.0:
+                ref_per_token_logps = None
+            elif self.ref_model is not None:
+                ref_per_token_logps = self._get_per_token_logps(
+                    self.ref_model, prompt_completion_ids, attention_mask, pixel_values, image_grid_thw
+                )
             else:
                 with self.accelerator.unwrap_model(model).disable_adapter():
-                    ref_per_token_logps = self._get_per_token_logps(model, prompt_completion_ids, attention_mask, pixel_values, image_grid_thw)
-        ref_per_token_logps = ref_per_token_logps[:, prompt_length - 1 :]
-
-        # Compute the KL divergence between the model and the reference model
-        per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
+                    ref_per_token_logps = self._get_per_token_logps(
+                        model, prompt_completion_ids, attention_mask, pixel_values, image_grid_thw
+                    )
+        ref_per_token_logps = ref_per_token_logps[:, prompt_length - 1:]
 
         # Decode the generated completions
         completions = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
@@ -485,11 +578,6 @@ class Qwen2VLGRPOTrainer(Trainer):
         std_grouped_rewards = std_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
         advantages = (rewards - mean_grouped_rewards) / (std_grouped_rewards + 1e-4)
 
-        # x - x.detach() allows for preserving gradients from x
-        per_token_loss = torch.exp(per_token_logps - per_token_logps.detach()) * advantages.unsqueeze(1)
-        per_token_loss = -(per_token_loss - self.beta * per_token_kl)
-        loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
-
         # Log the metrics
         completion_length = self.accelerator.gather_for_metrics(completion_mask.sum(1)).float().mean().item()
         self._metrics["completion_length"].append(completion_length)
@@ -506,8 +594,76 @@ class Qwen2VLGRPOTrainer(Trainer):
 
         self._metrics["reward_std"].append(self.accelerator.gather_for_metrics(std_grouped_rewards).mean().item())
 
-        mean_kl = ((per_token_kl * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
-        self._metrics["kl"].append(self.accelerator.gather_for_metrics(mean_kl).mean().item())
+        return {
+            "prompt_ids": prompt_ids,
+            "prompt_mask": prompt_mask,
+            "completion_ids": completion_ids,
+            "completion_mask": completion_mask,
+            "old_per_token_logps": old_per_token_logps,
+            "ref_per_token_logps": ref_per_token_logps,
+            "advantages": advantages,
+            "pixel_values": pixel_values,
+            "image_grid_thw": image_grid_thw
+        }
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        if return_outputs:
+            raise ValueError("The GRPOTrainer does not support returning outputs")
+    
+        # Check if we need to generate new completions or use buffered ones
+        if self.state.global_step % self.num_iterations == 0:
+            inputs = self._generate_and_score_completions(inputs, model)
+            self._buffered_inputs[self._step % self.args.gradient_accumulation_steps] = inputs
+        else:
+            inputs = self._buffered_inputs[self._step % self.args.gradient_accumulation_steps]
+        self._step += 1
+
+        # Get the prepared inputs
+        prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
+        completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
+        pixel_values = inputs["pixel_values"]
+        image_grid_thw = inputs["image_grid_thw"]
+        
+        # Concatenate for full sequence
+        input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
+        attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
+
+        # Get the current policy's log probabilities
+        per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, pixel_values, image_grid_thw)
+        # Get rid of the prompt (-1 because of the shift done in get_per_token_logps)
+        per_token_logps = per_token_logps[:, prompt_ids.size(1) - 1:]
+
+        # Get the advantages from inputs
+        advantages = inputs["advantages"]
+
+        # When using num_iterations == 1, old_per_token_logps == per_token_logps, so we can skip its computation
+        # and use per_token_logps.detach() instead
+        old_per_token_logps = inputs["old_per_token_logps"] if self.num_iterations > 1 else per_token_logps.detach()
+
+        # Compute the policy ratio and clipped version
+        coef_1 = torch.exp(per_token_logps - old_per_token_logps)
+        coef_2 = torch.clamp(coef_1, 1 - self.epsilon, 1 + self.epsilon)
+        per_token_loss1 = coef_1 * advantages.unsqueeze(1)
+        per_token_loss2 = coef_2 * advantages.unsqueeze(1)
+        per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+
+        # Add KL penalty if beta > 0
+        if self.beta > 0:
+            ref_per_token_logps = inputs["ref_per_token_logps"]
+            per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
+            per_token_loss = per_token_loss + self.beta * per_token_kl
+
+            # Log KL divergence
+            mean_kl = ((per_token_kl * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
+            self._metrics["kl"].append(self.accelerator.gather_for_metrics(mean_kl).mean().item())
+
+        # Compute final loss
+        loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
+
+        # Log clip ratio
+        is_clipped = (per_token_loss1 < per_token_loss2).float()
+        clip_ratio = (is_clipped * completion_mask).sum() / completion_mask.sum()
+        self._metrics["clip_ratio"].append(self.accelerator.gather_for_metrics(clip_ratio).mean().item())
 
         return loss
 
@@ -577,3 +733,28 @@ class Qwen2VLGRPOTrainer(Trainer):
         )
 
         model_card.save(os.path.join(self.args.output_dir, "README.md"))
+
+    def _get_train_sampler(self) -> Sampler:
+        """Returns a sampler that ensures proper data sampling for GRPO training."""
+        effective_batch_size = (
+            self.args.per_device_train_batch_size
+            * self.accelerator.num_processes
+            * self.args.gradient_accumulation_steps
+        )
+        
+        return RepeatRandomSampler(
+            data_source=self.train_dataset,
+            mini_repeat_count=1,
+            batch_size=self.num_generations,
+            repeat_count=self.num_iterations,
+            seed=self.args.seed,
+        )
+
+    def _get_eval_sampler(self, eval_dataset) -> Sampler:
+        """Returns a sampler for evaluation."""
+        return RepeatRandomSampler(
+            data_source=eval_dataset,
+            mini_repeat_count=self.num_generations,
+            seed=self.args.seed,
+        )
+
