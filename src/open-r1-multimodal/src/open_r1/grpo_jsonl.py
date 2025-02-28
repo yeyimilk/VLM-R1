@@ -18,6 +18,7 @@ import pathlib
 from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Optional
+from babel.numbers import parse_decimal
 
 from datasets import load_dataset, load_from_disk
 from transformers import Qwen2VLForConditionalGeneration
@@ -186,6 +187,28 @@ def mcq_reward(content, sol, **kwargs):
     return reward
 
 
+def yes_no_reward(content, sol, **kwargs):
+    content = content.lower()
+    sol = sol.lower()
+
+    # Extract answer from solution if it has think/answer tags
+    sol_match = re.search(r'<answer>(.*?)</answer>', sol)
+    ground_truth = sol_match.group(1).strip() if sol_match else sol.strip()
+
+    # Extract answer from content if it has think/answer tags
+    content_match = re.search(r'<answer>(.*?)</answer>', content, re.DOTALL)
+    student_answer = content_match.group(1).strip() if content_match else content.strip()
+
+    ground_yes_no = re.search(r'(yes|no)', ground_truth)
+    ground_yes_no = ground_yes_no.group(1) if ground_yes_no else ''
+    student_yes_no = re.search(r'(yes|no)', student_answer)
+    student_yes_no = student_yes_no.group(1) if student_yes_no else ''
+
+    reward = 1.0 if ground_yes_no == student_yes_no else 0.0
+
+    return reward
+
+
 def default_accuracy_reward(content, sol, **kwargs):
     reward = 0.0
     # Try symbolic verification first for numeric answers
@@ -237,6 +260,8 @@ def accuracy_reward(completions, solution, **kwargs):
         # if accu_reward_method is defined, use the corresponding reward function, otherwise use the default reward function
         if accu_reward_method == "mcq":
             reward = mcq_reward(content, sol)
+        elif accu_reward_method == 'yes_no':
+            reward = yes_no_reward(content, sol)
         else:
             reward = default_accuracy_reward(content, sol)  
         rewards.append(reward)
