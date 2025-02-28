@@ -116,9 +116,9 @@ class GRPOScriptArguments(ScriptArguments):
         },
     )
     reward_method: Optional[str] = field(
-        default="default",
+        default=None,
         metadata={
-            "help": "Choose reward method: 'default', 'ratio', 'choice', ..."
+            "help": "Choose reward method: 'default', 'mcp', ..."
         },
     )
 
@@ -300,7 +300,16 @@ def main(script_args, training_args, model_args):
     
     data_files = script_args.data_file_paths.split(":")
     image_folders = script_args.image_folders.split(":")
-    accu_reward_methods = script_args.reward_method.split(":")
+    
+    if len(data_files) != len(image_folders):
+        raise ValueError("Number of data files must match number of image folders")
+    
+    if script_args.reward_method is None:
+        accu_reward_methods = ["default"] * len(data_files)
+    else:
+        accu_reward_methods = script_args.reward_method.split(":")
+        assert len(accu_reward_methods) == len(data_files), f"Number of reward methods must match number of data files: {len(accu_reward_methods)} != {len(data_files)}"
+
     
     if len(data_files) != len(image_folders):
         raise ValueError("Number of data files must match number of image folders")
