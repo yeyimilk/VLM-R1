@@ -377,8 +377,17 @@ def main(script_args, training_args, model_args):
                 item['image_path'] = os.path.join(image_folder, item['image'])
                 # Remove immediate image loading
                 item['problem'] = item['conversations'][0]['value'].replace('<image>', '')
-                item['solution'] = item['conversations'][1]['value'].replace('<answer>', '').replace('</answer>', '').strip()
+                
+                # Handle solution that could be a float or string
+                solution_value = item['conversations'][1]['value']
+                if isinstance(solution_value, str):
+                    item['solution'] = solution_value.replace('<answer>', '').replace('</answer>', '').strip()
+                else:
+                    # If it's a float or other non-string type, keep it as is
+                    item['solution'] = str(solution_value)
+                
                 del item['image'] # remove the image column so that it can be loaded later
+                del item['conversations']
                 item['accu_reward_method'] = item.get('accu_reward_method', accu_reward_method) # if accu_reward_method is in the data jsonl, use the value in the data jsonl, otherwise use the defined value
                 all_data.append(item)
     
@@ -413,7 +422,6 @@ def main(script_args, training_args, model_args):
         splits['validation'] = train_val_split['test']
 
     # Select trainer class based on vlm_trainer argument
-
     trainer_cls = Qwen2VLGRPOTrainer
     print("using trainer:", trainer_cls.__name__)
 
