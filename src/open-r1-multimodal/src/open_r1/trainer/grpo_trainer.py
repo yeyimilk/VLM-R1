@@ -51,7 +51,7 @@ import PIL.Image
 
 import copy
 from torch.utils.data import Sampler
-
+import warnings
 
 if is_peft_available():
     from peft import PeftConfig, get_peft_model
@@ -337,6 +337,10 @@ class Qwen2VLGRPOTrainer(Trainer):
 
         # Training arguments
         self.max_prompt_length = args.max_prompt_length
+        self.max_prompt_length = None
+        if args.max_prompt_length is not None:
+            warnings.warn("Setting max_prompt_length is currently not supported, it has been set to None")
+
         self.max_completion_length = args.max_completion_length  # = |o_i| in the GRPO paper
         self.num_generations = args.num_generations  # = G in the GRPO paper
         self.generation_config = GenerationConfig(
@@ -509,7 +513,9 @@ class Qwen2VLGRPOTrainer(Trainer):
         
         if self.max_prompt_length is not None:
             prompt_ids = prompt_ids[:, -self.max_prompt_length :]
+            prompt_inputs["input_ids"] = prompt_ids
             prompt_mask = prompt_mask[:, -self.max_prompt_length :]
+            prompt_inputs["attention_mask"] = prompt_mask
 
         # Generate completions
         with unwrap_model_for_generation(model, self.accelerator) as unwrapped_model:
