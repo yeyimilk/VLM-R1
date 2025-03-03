@@ -210,6 +210,7 @@ class Qwen2VLGRPOTrainer(Trainer):
         callbacks: Optional[list[TrainerCallback]] = None,
         optimizers: tuple[Optional[torch.optim.Optimizer], Optional[torch.optim.lr_scheduler.LambdaLR]] = (None, None),
         peft_config: Optional["PeftConfig"] = None,
+        freeze_vision_modules: Optional[bool] = False,
         max_pixels: Optional[int] = 12845056,
         min_pixels: Optional[int] = 3136,
         attn_implementation: str = "flash_attention_2",
@@ -261,8 +262,30 @@ class Qwen2VLGRPOTrainer(Trainer):
                     "This argument can only be used when the `model` argument is a string."
                 )
 
+        self.vision_modules_keywords = ["visual"]
         if peft_config is not None:
+            def find_all_linear_names(model, multimodal_keywords):
+                cls = torch.nn.Linear
+                lora_module_names = set()
+                for name, module in model.named_modules():
+                    # LoRA is not applied to the vision modules
+                    if any(mm_keyword in name for mm_keyword in multimodal_keywords):
+                        continue
+                    if isinstance(module, cls):
+                        lora_module_names.add(name)
+                for m in lora_module_names:  # needed for 16-bit
+                    if "embed_tokens" in m:
+                        lora_module_names.remove(m)
+                return list(lora_module_names)
+            target_modules = find_all_linear_names(model, self.vision_modules_keywords)
+            peft_config.target_modules = target_modules
             model = get_peft_model(model, peft_config)
+
+        if freeze_vision_modules:
+            print("Freezing vision modules...")
+            for n, p in model.named_parameters():
+                if any(keyword in n for keyword in self.vision_modules_keywords):
+                    p.requires_grad = False
 
         # Enable gradient checkpointing if requested
         if args.gradient_checkpointing:

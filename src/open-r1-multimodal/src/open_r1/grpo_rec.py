@@ -111,6 +111,11 @@ class GRPOScriptArguments(ScriptArguments):
         metadata={"help": "Root directory of the image"},
     )
 
+@dataclass
+class GRPOModelConfig(ModelConfig):
+    freeze_vision_modules: bool = False
+
+
 SYSTEM_PROMPT = (
     "A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant "
     "first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning "
@@ -303,6 +308,7 @@ def main(script_args, training_args, model_args):
         train_dataset=dataset,
         eval_dataset=None,
         peft_config=get_peft_config(model_args),
+        freeze_vision_modules=model_args.freeze_vision_modules,
         attn_implementation=model_args.attn_implementation,
         max_pixels=script_args.max_pixels,
         min_pixels=script_args.min_pixels,
@@ -319,6 +325,6 @@ def main(script_args, training_args, model_args):
 
 
 if __name__ == "__main__":
-    parser = TrlParser((GRPOScriptArguments, GRPOConfig, ModelConfig))
+    parser = TrlParser((GRPOScriptArguments, GRPOConfig, GRPOModelConfig))
     script_args, training_args, model_args = parser.parse_args_and_config()
     main(script_args, training_args, model_args)
