@@ -40,7 +40,7 @@ logger = logging.get_logger(__name__)
 
 client = OpenAI(
     api_key=os.getenv("OPENAI_API_KEY"),
-    base_url=os.getenv("OPENAI_BASE_URL")
+    base_url=os.getenv("OPENAI_API_BASE")
 )
 
 def custom_forward(
