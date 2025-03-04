@@ -39,8 +39,8 @@ from transformers.utils import logging
 logger = logging.get_logger(__name__)
 
 client = OpenAI(
-    api_key="#",
-    base_url="#"
+    api_key=os.getenv("OPENAI_API_KEY"),
+    base_url=os.getenv("OPENAI_BASE_URL")
 )
 
 def custom_forward(
