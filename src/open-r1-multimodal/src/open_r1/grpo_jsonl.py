@@ -38,6 +38,11 @@ from transformers.utils import logging
 
 logger = logging.get_logger(__name__)
 
+client = OpenAI(
+    api_key="#",
+    base_url="#"
+)
+
 def custom_forward(
         self,
         hidden_states: torch.Tensor,
@@ -129,7 +134,7 @@ def extract_choice(text):
     text = re.sub(r'\s+', ' ', text)  # Normalize spaces
 
     # 2. Choice should not have uppercase letters before or after
-    choices = re.findall(r'(?<![A-Z])([A-Z])(?![A-Z])', text)
+    choices = re.findall(r'(?<![A-Z])([A-Z])(?=[\.\,\?\!\:\;]|$)', text)
 
     if not choices:
         return None
@@ -169,6 +174,40 @@ def extract_choice(text):
     # Return highest scoring choice
     return max(choice_scores.items(), key=lambda x: x[1])[0]
 
+def evaluate_answer_similarity(student_answer, ground_truth):
+    """Use llm to evaluate answer similarity."""
+    try:
+        response = client.chat.completions.create(
+            model="qwen2.5:7b",
+            messages=[
+                {
+                    "role": "user",
+                    "content": "You are a evaluation expert. First, analyze the student's response to identify and extract their final answer. Then, compare the extracted answer with the correct solution. Output ONLY '1.0' if the extracted answer matches the correct solution in meaning, or '0.0' if the student's response does not contain a clear or correct answer. No other output is allowed."
+                },
+                {
+                    "role": "user",
+                    "content": f"Student's response: {student_answer}\nCorrect solution: {ground_truth}\nOutput only 1.0 or 0.0:"
+                }
+            ],
+            temperature=0
+        )
+        result = response.choices[0].message.content.strip()
+        return float(result)
+    
+    except Exception as e:
+        print(f"Error in GPT evaluation: {e}")
+        # If API call fails, fall back to simple text matching
+        return 1.0 if student_answer ==ground_truth else 0.0
+
+def llm_reward(content, sol, **kwargs):
+    # Extract answer from content if it has think/answer tags
+    sol_match = re.search(r'<answer>(.*?)</answer>', sol)
+    ground_truth = sol_match.group(1).strip() if sol_match else sol.strip()
+    
+    # Extract answer from content if it has think/answer tags
+    content_matches = re.findall(r'<answer>(.*?)</answer>', content, re.DOTALL)
+    student_answer = content_matches[-1].strip() if content_matches else content.strip()
+    return evaluate_answer_similarity(student_answer, ground_truth)
 
 def mcq_reward(content, sol, **kwargs):
     # For multiple choice, extract and compare choices
@@ -238,25 +277,25 @@ def clean_text(text, exclue_chars=['\n', '\r']):
 
 def default_accuracy_reward(content, sol, **kwargs):
     reward = 0.0
+        # Extract answer from solution if it has think/answer tags
+    sol_match = re.search(r'<answer>(.*?)</answer>', sol)
+    ground_truth = sol_match.group(1).strip() if sol_match else sol.strip()
+    
+    # Extract answer from content if it has think/answer tags
+    content_matches = re.findall(r'<answer>(.*?)</answer>', content, re.DOTALL)
+    student_answer = content_matches[-1].strip() if content_matches else content.strip()
+    
     # Try symbolic verification first for numeric answers
     try:
-        answer = parse(content)
-        if float(verify(answer, parse(sol))) > 0:
+        answer = parse(student_answer)
+        if float(verify(answer, parse(ground_truth))) > 0:
             reward = 1.0
     except Exception:
         pass  # Continue to next verification method if this fails
 
     # If symbolic verification failed, try string matching or fuzzy matching
     if reward == 0.0:
-        try:
-            # Extract answer from solution if it has think/answer tags
-            sol_match = re.search(r'<answer>(.*?)</answer>', sol)
-            ground_truth = sol_match.group(1).strip() if sol_match else sol.strip()
-            
-            # Extract answer from content if it has think/answer tags
-            content_matches = re.findall(r'<answer>(.*?)</answer>', content, re.DOTALL)
-            student_answer = content_matches[-1].strip() if content_matches else content.strip()
-            
+        try: 
             # Check if ground truth contains numbers
             has_numbers = bool(re.search(r'\d', ground_truth))
             # Check if it's a multiple choice question
@@ -291,6 +330,8 @@ def accuracy_reward(completions, solution, **kwargs):
             reward = mcq_reward(content, sol)
         elif accu_reward_method == 'yes_no':
             reward = yes_no_reward(content, sol)
+        elif accu_reward_method == 'llm':
+            reward = llm_reward(content, sol)
         else:
             reward = default_accuracy_reward(content, sol)  
         rewards.append(reward)
