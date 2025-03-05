@@ -38,11 +38,13 @@ import torch
 from typing import Tuple
 from transformers.utils import logging
 
+from openai import OpenAI
+
 logger = logging.get_logger(__name__)
 
 client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY"),
-    base_url=os.getenv("OPENAI_API_BASE")
+    api_key=os.getenv("OPENAI_API_KEY", "sk-proj-1234567890"),
+    base_url=os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
 )
 
 def custom_forward(
