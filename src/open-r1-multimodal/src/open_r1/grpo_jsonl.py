@@ -18,7 +18,7 @@ import pathlib
 from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Optional
-# from babel.numbers import parse_decimal
+from babel.numbers import parse_decimal
 from utils.math import compute_score
 from datasets import load_dataset, load_from_disk
 from transformers import Qwen2VLForConditionalGeneration
@@ -37,6 +37,7 @@ from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLVisionF
 import torch
 from typing import Tuple
 from transformers.utils import logging
+
 from openai import OpenAI
 
 logger = logging.get_logger(__name__)
@@ -359,13 +360,10 @@ def numeric_reward(content, sol, **kwargs):
         return 1.0 if content == sol else 0.0
     except:
         return None
-
 def math_reward(content, sol, **kwargs):
     content = clean_text(content)
     sol = clean_text(sol)
     return compute_score(content, sol)
-
-    
 def clean_text(text, exclue_chars=['\n', '\r']):
     # Extract content between <answer> and </answer> if present
     answer_matches = re.findall(r'<answer>(.*?)</answer>', text, re.DOTALL)
@@ -442,26 +440,27 @@ def accuracy_reward(completions, solution, **kwargs):
             reward = yes_no_reward(content, sol)
         elif accu_reward_method == 'llm':
             reward = llm_reward(content, sol)
-        elif accu_reward_method == 'math':
-            reward = math_reward(content, sol)
         elif accu_reward_method == 'map':
             reward = map_reward(content, sol)
+        elif accu_reward_method == 'math':
+            reward = math_reward(content, sol)
         else:
             reward = default_accuracy_reward(content, sol)  
         rewards.append(reward)
         
-    if os.getenv("DEBUG_MODE") == "true":
-        log_path = os.getenv("LOG_PATH")
-        current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
-        image_path = kwargs.get("image_path")[0]
-        problem = kwargs.get("problem")[0]
-        with open(log_path, "a", encoding='utf-8') as f:
-            f.write(f"------------- {current_time} Accuracy reward: {reward} -------------\n")
-            f.write(f"accu_reward_method: {accu_reward_method}\n")
-            f.write(f"image_path: {image_path}\n")
-            f.write(f"problem: {problem}\n")
-            f.write(f"Content: {content}\n")
-            f.write(f"Solution: {sol}\n")     
+        if os.getenv("DEBUG_MODE") == "true":
+            log_path = os.getenv("LOG_PATH")
+            current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
+            image_path = kwargs.get("image_path")[0] if "image_path" in kwargs else None
+            problem = kwargs.get("problem")[0]
+            if reward <= 1.0:  # this condition can be changed for debug
+                with open(log_path, "a", encoding='utf-8') as f:
+                    f.write(f"------------- {current_time} Accuracy reward: {reward} -------------\n")
+                    f.write(f"accu_reward_method: {accu_reward_method}\n")
+                    f.write(f"image_path: {image_path}\n")
+                    f.write(f"problem: {problem}\n")
+                    f.write(f"Content: {content}\n")
+                    f.write(f"Solution: {sol}\n")     
 
         
     return rewards
@@ -476,7 +475,7 @@ def format_reward(completions, **kwargs):
     current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
     if os.getenv("DEBUG_MODE") == "true":
         log_path = os.getenv("LOG_PATH")
-        with open(log_path, "a", encoding='utf-8') as f:
+        with open(log_path.replace(".txt", "_format.txt"), "a", encoding='utf-8') as f:
             f.write(f"------------- {current_time} Format reward -------------\n")
             for content, match in zip(completion_contents, matches):
                 f.write(f"Content: {content}\n")
@@ -532,8 +531,10 @@ def main(script_args, training_args, model_args):
         with open(data_file, 'r') as f:
             for line in f:
                 item = json.loads(line)
-                # Store image path instead of loading the image
-                item['image_path'] = os.path.join(image_folder, item['image'])
+                if 'image' in item:
+                    # Store image path instead of loading the image
+                    item['image_path'] = os.path.join(image_folder, item['image'])
+                    del item['image'] # remove the image column so that it can be loaded later
                 # Remove immediate image loading
                 item['problem'] = item['conversations'][0]['value'].replace('<image>', '')
                 
@@ -545,32 +546,44 @@ def main(script_args, training_args, model_args):
                     # If it's a float or other non-string type, keep it as is
                     item['solution'] = str(solution_value)
                 
-                del item['image'] # remove the image column so that it can be loaded later
                 del item['conversations']
                 item['accu_reward_method'] = item.get('accu_reward_method', accu_reward_method) # if accu_reward_method is in the data jsonl, use the value in the data jsonl, otherwise use the defined value
                 all_data.append(item)
-    
+
     dataset = Dataset.from_list(all_data)
 
     def make_conversation_from_jsonl(example):
-        # Don't load image here, just store the path
-        return {
-            'image_path': example['image_path'],  # Store path instead of loaded image
-            'problem': example['problem'],
-            'solution': f"<answer> {example['solution']} </answer>",
-            'accu_reward_method': example['accu_reward_method'],
-            'prompt': [{
-                'role': 'user',
-                'content': [
-                    {'type': 'image', 'text': None},
-                    {'type': 'text', 'text': example['problem'] + '  Output the thinking process in <think> </think> and final answer in <answer> </answer> tags.'}
-                ]
-            }]
-        }
+        if 'image_path' in example and example['image_path'] is not None:
+            # Don't load image here, just store the path
+            return {
+                'image_path': example['image_path'],  # Store path instead of loaded image
+                'problem': example['problem'],
+                'solution': f"<answer> {example['solution']} </answer>",
+                'accu_reward_method': example['accu_reward_method'],
+                'prompt': [{
+                    'role': 'user',
+                    'content': [
+                        {'type': 'image', 'text': None},
+                        {'type': 'text', 'text': example['problem'] +  '  Output the thinking process in <think> </think> and final answer in <answer> </answer> tags.'}
+                    ]
+                }]
+            }
+        else:
+            return {
+                'problem': example['problem'],
+                'solution': f"<answer> {example['solution']} </answer>",
+                'accu_reward_method': example['accu_reward_method'],
+                'prompt': [{
+                    'role': 'user',
+                    'content': [
+                        {'type': 'text', 'text': example['problem'] + '  Output the thinking process in <think> </think> and final answer in <answer> </answer> tags.'}
+                    ]
+                }]
+            }
 
     # Map the conversations
     dataset = dataset.map(make_conversation_from_jsonl, num_proc=8)
-    
+
     # Split dataset for validation if requested
     splits = {'train': dataset}
     if script_args.val_split_ratio > 0:

@@ -502,43 +502,59 @@ class Qwen2VLGRPOTrainer(Trainer):
         for x in inputs:
             if "image" in x:
                 img = x["image"]
-            else:
+            elif "image_path" in x and x["image_path"] is not None:
                 img = PIL.Image.open(x["image_path"])
 
-            # Ensure minimum dimensions of 28 pixels
-            w, h = img.size
-            if w < 28 or h < 28:
-                # Calculate new dimensions maintaining aspect ratio
-                if w < h:
-                    new_w = 28
-                    new_h = int(h * (28/w))
-                else:
-                    new_h = 28
-                    new_w = int(w * (28/h))
-                img = img.resize((new_w, new_h), PIL.Image.Resampling.LANCZOS)
+            try:
+                # Ensure minimum dimensions of 28 pixels
+                w, h = img.size
+                if w < 28 or h < 28:
+                    # Calculate new dimensions maintaining aspect ratio
+                    if w < h:
+                        new_w = 28
+                        new_h = int(h * (28/w))
+                    else:
+                        new_h = 28
+                        new_w = int(w * (28/h))
+                    img = img.resize((new_w, new_h), PIL.Image.Resampling.LANCZOS)
             
-            images.append(img)
+                images.append(img)
+            except:
+                pass
 
-        prompt_inputs = self.processing_class(
-            text=prompts_text,
-            images=images,
-            return_tensors="pt",
-            padding=True,
-            padding_side="left",
-            add_special_tokens=False,
-        )
+        if len(images) > 0:
+            prompt_inputs = self.processing_class(
+                text=prompts_text,
+                images=images,
+                return_tensors="pt",
+                padding=True,
+                padding_side="left",
+                add_special_tokens=False,
+            )
+        else:
+            prompt_inputs = self.processing_class(
+                text=prompts_text,
+                return_tensors="pt",
+                padding=True,
+                padding_side="left",
+                add_special_tokens=False,
+            )
         prompt_inputs = super()._prepare_inputs(prompt_inputs)
 
         prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
-        pixel_values = prompt_inputs["pixel_values"]
-        image_grid_thw = prompt_inputs["image_grid_thw"]
+        if len(images) > 0:
+            pixel_values = prompt_inputs["pixel_values"]
+            image_grid_thw = prompt_inputs["image_grid_thw"]
+        else:
+            pixel_values = None
+            image_grid_thw = None
 
         
-        if self.max_prompt_length is not None:
-            prompt_ids = prompt_ids[:, -self.max_prompt_length :]
-            prompt_inputs["input_ids"] = prompt_ids
-            prompt_mask = prompt_mask[:, -self.max_prompt_length :]
-            prompt_inputs["attention_mask"] = prompt_mask
+        # if self.max_prompt_length is not None:
+        #     prompt_ids = prompt_ids[:, -self.max_prompt_length :]
+        #     prompt_inputs["input_ids"] = prompt_ids
+        #     prompt_mask = prompt_mask[:, -self.max_prompt_length :]
+        #     prompt_inputs["attention_mask"] = prompt_mask
 
         # Generate completions
         with unwrap_model_for_generation(model, self.accelerator) as unwrapped_model:
@@ -561,9 +577,13 @@ class Qwen2VLGRPOTrainer(Trainer):
 
         # Concatenate prompt_mask with completion_mask for logit computation
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)  # (B, P+C)
-        pixel_values = prompt_inputs["pixel_values"]
-        image_grid_thw = prompt_inputs["image_grid_thw"]
-
+        try:
+            pixel_values = prompt_inputs["pixel_values"]
+            image_grid_thw = prompt_inputs["image_grid_thw"]
+        except:
+            
+            pixel_values = None
+            image_grid_thw = None
         with torch.no_grad():
             # When using num_iterations == 1, old_per_token_logps == per_token_logps, so we can skip its
             # computation here, and use per_token_logps.detach() instead.
