@@ -48,7 +48,7 @@ datasets:
 
 > 4. ```bash src/open-r1-multimodal/run_scripts/run_grpo_rec.sh```
 
-> NOTE: If you encounter 'CUDA out of memory' error, you can try to (1) set `gradient_checkpointing` as `true`, (2) reduce the `num_generations`, or (3) use lora (the script will be updated soon).
+> NOTE: If you encounter 'CUDA out of memory' error, you can try to (1) set `gradient_checkpointing` as `true`, (2) reduce the `per_device_train_batch_size`, or (3) use lora.
 
 ```bash
 cd src/open-r1-multimodal
@@ -66,7 +66,7 @@ torchrun --nproc_per_node="8" \
     --image_root <your_image_root> \
     --max_prompt_length 1024 \
     --num_generations 8 \
-    --per_device_train_batch_size 1 \
+    --per_device_train_batch_size 8 \
     --gradient_accumulation_steps 2 \
     --logging_steps 1 \
     --bf16 \
