@@ -28,7 +28,9 @@ from open_r1.trainer import Qwen2VLGRPOTrainer, GRPOConfig
 from trl import ModelConfig, ScriptArguments, TrlParser, get_peft_config
 import PIL
 from Levenshtein import ratio
-
+from open_r1.utils.pycocotools.coco import COCO
+from open_r1.utils.pycocotools.cocoeval import COCOeval
+import json
 
 # ----------------------- Fix the flash attention bug in the current version of transformers -----------------------
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLVisionFlashAttention2, apply_rotary_pos_emb_flashatt, flash_attn_varlen_func
@@ -37,11 +39,13 @@ from typing import Tuple
 from transformers.utils import logging
 from openai import OpenAI
 
+from openai import OpenAI
+
 logger = logging.get_logger(__name__)
 
 client = OpenAI(
-    api_key='#',
-    base_url='#'
+    api_key=os.getenv("OPENAI_API_KEY", "sk-proj-1234567890"),
+    base_url=os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
 )
 
 def custom_forward(
@@ -248,6 +252,107 @@ def yes_no_reward(content, sol, **kwargs):
 
     return reward
 
+def calculate_map(pred_bbox_list, gt_bbox_list):
+    # Calculate mAP
+
+    # Initialize COCO object for ground truth
+    gt_json = {"annotations": [], "images": [], "categories": []}
+    gt_json["images"] = [{
+        "id": 0,
+        "width": 2048,
+        "height": 2048,
+        "file_name": "image_0.jpg"
+    }]
+
+    gt_json["categories"] = []
+
+    cats2id = {}
+    cat_count = 0
+    for idx, gt_bbox in enumerate(gt_bbox_list):
+        if gt_bbox["label"] not in cats2id:
+            cats2id[gt_bbox["label"]] = cat_count
+            gt_json["categories"].append({
+                "id": cat_count,
+                "name": gt_bbox["label"]
+            })
+            cat_count += 1
+        
+        gt_json["annotations"].append({
+            "id": idx+1,
+            "image_id": 0,
+            "category_id": cats2id[gt_bbox["label"]],
+            "bbox": [gt_bbox["bbox_2d"][0], gt_bbox["bbox_2d"][1], gt_bbox["bbox_2d"][2] - gt_bbox["bbox_2d"][0], gt_bbox["bbox_2d"][3] - gt_bbox["bbox_2d"][1]],
+            "area": (gt_bbox["bbox_2d"][2] - gt_bbox["bbox_2d"][0]) * (gt_bbox["bbox_2d"][3] - gt_bbox["bbox_2d"][1]),
+            "iscrowd": 0
+        })
+    coco_gt = COCO(gt_json)
+
+    dt_json = []
+    for idx, pred_bbox in enumerate(pred_bbox_list):
+        try:
+            dt_json.append({
+                "image_id": 0,
+                "category_id": cats2id[pred_bbox["label"]],
+                "bbox": [pred_bbox["bbox_2d"][0], pred_bbox["bbox_2d"][1], pred_bbox["bbox_2d"][2] - pred_bbox["bbox_2d"][0], pred_bbox["bbox_2d"][3] - pred_bbox["bbox_2d"][1]],
+                "score": 1.0,
+                "area": (pred_bbox["bbox_2d"][2] - pred_bbox["bbox_2d"][0]) * (pred_bbox["bbox_2d"][3] - pred_bbox["bbox_2d"][1])
+            })
+        except:
+            pass
+    
+    if len(dt_json) == 0:
+        return 0.0
+    
+    coco_dt = coco_gt.loadRes(dt_json)
+    coco_eval = COCOeval(coco_gt, coco_dt, "bbox")
+
+    coco_eval.evaluate()
+    coco_eval.accumulate()
+    coco_eval.summarize()
+    return coco_eval.stats[1]
+
+def map_reward(content, sol, **kwargs):
+    """
+    Calculate mean average precision (mAP) reward between predicted and ground truth bounding boxes
+    
+    Args:
+        content: String containing predicted bounding boxes in JSON format
+        sol: String containing ground truth bounding boxes in JSON format
+        
+    Returns:
+        float: mAP reward score between 0 and 1
+    """
+    # Extract JSON content between ```json tags
+    pattern = r'```json(.*?)```'
+    json_match = re.search(pattern, sol, re.DOTALL)
+    bbox_json = json_match.group(1).strip() if json_match else None
+
+    # Parse ground truth JSON to get bbox list
+    gt_bbox_list = []
+    if bbox_json:
+        bbox_data = json.loads(bbox_json)
+        gt_bbox_list = [item for item in bbox_data]
+    
+    # Parse predicted JSON to get bbox list
+    pred_bbox_list = []
+    json_match = re.search(pattern, content, re.DOTALL)
+    if json_match:
+        try:
+            bbox_data = json.loads(json_match.group(1).strip())
+            pred_bbox_list = [item for item in bbox_data]
+        except:
+            # Return empty list if JSON parsing fails
+            pred_bbox_list = []
+
+    # Calculate mAP if both prediction and ground truth exist
+    if len(pred_bbox_list) > 0 and len(gt_bbox_list) > 0:
+        bbox_reward = calculate_map(pred_bbox_list, gt_bbox_list)
+    else:
+        bbox_reward = 0.0
+    
+    return bbox_reward
+
+
 def numeric_reward(content, sol, **kwargs):
     content = clean_text(content)
     sol = clean_text(sol)
@@ -341,6 +446,8 @@ def accuracy_reward(completions, solution, **kwargs):
             reward = llm_reward(content, sol)
         elif accu_reward_method == 'math':
             reward = math_reward(content, sol)
+        elif accu_reward_method == 'map':
+            reward = map_reward(content, sol)
         else:
             reward = default_accuracy_reward(content, sol)  
         rewards.append(reward)
