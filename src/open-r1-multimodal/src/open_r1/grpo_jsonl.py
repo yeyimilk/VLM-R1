@@ -18,8 +18,8 @@ import pathlib
 from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Optional
-from babel.numbers import parse_decimal
-
+# from babel.numbers import parse_decimal
+from utils.math import compute_score
 from datasets import load_dataset, load_from_disk
 from transformers import Qwen2VLForConditionalGeneration
 
@@ -35,12 +35,13 @@ from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLVisionF
 import torch
 from typing import Tuple
 from transformers.utils import logging
+from openai import OpenAI
 
 logger = logging.get_logger(__name__)
 
 client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY"),
-    base_url=os.getenv("OPENAI_API_BASE")
+    api_key='#',
+    base_url='#'
 )
 
 def custom_forward(
@@ -256,6 +257,12 @@ def numeric_reward(content, sol, **kwargs):
     except:
         return None
 
+def math_reward(content, sol, **kwargs):
+    content = clean_text(content)
+    sol = clean_text(sol)
+    return compute_score(content, sol)
+
+    
 def clean_text(text, exclue_chars=['\n', '\r']):
     # Extract content between <answer> and </answer> if present
     answer_matches = re.findall(r'<answer>(.*?)</answer>', text, re.DOTALL)
@@ -332,6 +339,8 @@ def accuracy_reward(completions, solution, **kwargs):
             reward = yes_no_reward(content, sol)
         elif accu_reward_method == 'llm':
             reward = llm_reward(content, sol)
+        elif accu_reward_method == 'math':
+            reward = math_reward(content, sol)
         else:
             reward = default_accuracy_reward(content, sol)  
         rewards.append(reward)
