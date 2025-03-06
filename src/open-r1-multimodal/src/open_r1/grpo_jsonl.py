@@ -39,8 +39,6 @@ from typing import Tuple
 from transformers.utils import logging
 from openai import OpenAI
 
-from openai import OpenAI
-
 logger = logging.get_logger(__name__)
 
 client = OpenAI(
