@@ -637,8 +637,9 @@ class Qwen2VLGRPOTrainer(Trainer):
                 reward_kwargs = {key: [] for key in inputs[0].keys() if key not in ["prompt", "completion"]}
                 for key in reward_kwargs:
                     for example in inputs:
-                        # Repeat each value in the column for `num_generations` times
-                        reward_kwargs[key].extend([example[key]] * self.num_generations)
+                        # No need to duplicate prompts as we're not generating multiple completions per prompt
+                        # reward_kwargs[key].extend([example[key]] * self.num_generations)
+                        reward_kwargs[key].extend([example[key]])
                 output_reward_func = reward_func(prompts=prompts, completions=completions, **reward_kwargs)
                 rewards_per_func[:, i] = torch.tensor(output_reward_func, dtype=torch.float32, device=device)
 
