@@ -277,6 +277,38 @@ def iou_reward(completions, solution, **kwargs):
     return rewards
 
 
+def count_reward(completions, solution, **kwargs):
+    contents = [completion[0]["content"] for completion in completions]
+    rewards = []
+    current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
+    # number only
+    answer_tag_pattern = r'<answer>(\d+)</answer>'
+    for content, sol in zip(contents, solution):
+        reward = 0.0
+        # Try symbolic verification first
+        try:
+            content_answer_match = re.search(answer_tag_pattern, content, re.DOTALL)
+            if content_answer_match:
+                answer_number = int(content_answer_match.group(1))
+                
+                abs_gap = (solution - answer_number) / solution
+                if abs_gap < 0.5:
+                    reward = 1.0 - abs_gap
+                
+        except Exception:
+            pass  # Continue to next verification method if this fails
+                
+        rewards.append(reward)
+        if os.getenv("DEBUG_MODE") == "true":
+            log_path = os.getenv("LOG_PATH")
+            # local_rank = int(os.getenv("LOCAL_RANK", 0))
+            with open(log_path, "a", encoding='utf-8') as f:
+                f.write(f"------------- {current_time} Accuracy reward: {reward} -------------\n")
+                f.write(f"Content: {content}\n")
+                f.write(f"Solution: {sol}\n")
+    return rewards
+
+
 def format_reward(completions, **kwargs):
     """Reward function that checks if the completion has a specific format."""
     # pattern = r"<think>.*?</think>\s*<answer>.*?</answer>"
@@ -285,10 +317,17 @@ def format_reward(completions, **kwargs):
     matches = [re.fullmatch(pattern, content, re.DOTALL) for content in completion_contents]
     return [1.0 if match else 0.0 for match in matches]
 
+def count_format_reward(completions, **kwargs):
+    """Reward function that checks if the completion has a specific format."""
+    pattern = r"<think>.*?</think>\s*<answer>(\d+)</answer>"
+    completion_contents = [completion[0]["content"] for completion in completions]
+    matches = [re.fullmatch(pattern, content, re.DOTALL) for content in completion_contents]
+    return [1.0 if match else 0.0 for match in matches]
+
 
 reward_funcs_registry = {
-    "accuracy": iou_reward,
-    "format": format_reward,
+    "accuracy": count_reward,
+    "format": count_format_reward,
 }
 
 
