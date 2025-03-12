@@ -192,7 +192,7 @@ class LazySupervisedDataset(Dataset):
             }
         # FIXME
         # This is only for Grounding task
-        QUESTION_TEMPLATE = "{Question} First output the thinking process in <think> </think> tags and then output the final answer in <answer> </answer> tags. Output the final answer in JSON format."
+        QUESTION_TEMPLATE = "{Question}. First output the thinking process in <think> </think> tags and then output the final answer in <answer> </answer> tags and the answer should be a number only."
         def make_conversation_image(example):
             return {
                 "prompt": [
@@ -286,14 +286,15 @@ def count_reward(completions, solution, **kwargs):
     for content, sol in zip(contents, solution):
         reward = 0.0
         # Try symbolic verification first
+        answer_number = 0
         try:
             content_answer_match = re.search(answer_tag_pattern, content, re.DOTALL)
             if content_answer_match:
                 answer_number = int(content_answer_match.group(1))
                 
-                abs_gap = (solution - answer_number) / solution
+                abs_gap = (sol - answer_number) / sol
                 if abs_gap < 0.5:
-                    reward = 1.0 - abs_gap
+                    reward = 1.5 - abs_gap
                 
         except Exception:
             pass  # Continue to next verification method if this fails
@@ -303,9 +304,9 @@ def count_reward(completions, solution, **kwargs):
             log_path = os.getenv("LOG_PATH")
             # local_rank = int(os.getenv("LOCAL_RANK", 0))
             with open(log_path, "a", encoding='utf-8') as f:
-                f.write(f"------------- {current_time} Accuracy reward: {reward} -------------\n")
+                f.write(f"------------- {current_time} Accuracy reward: {reward}-------------\n")
                 f.write(f"Content: {content}\n")
-                f.write(f"Solution: {sol}\n")
+                f.write(f"Solution: {sol}, y_p: {answer_number}\n")
     return rewards
 
 
