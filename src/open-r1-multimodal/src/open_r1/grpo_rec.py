@@ -292,7 +292,7 @@ def count_reward(completions, solution, **kwargs):
             if content_answer_match:
                 answer_number = int(content_answer_match.group(1))
                 
-                abs_gap = (sol - answer_number) / sol
+                abs_gap = abs(sol - answer_number) / sol
                 if abs_gap < 0.5:
                     reward = 1.5 - abs_gap
                 
