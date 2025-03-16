@@ -298,7 +298,10 @@ def count_reward(completions, solution, **kwargs):
                 
         except Exception:
             pass  # Continue to next verification method if this fails
-                
+        
+        if reward < 0 or reward > 1000000 or reward == int.infinity:
+            reward = 0.0
+        
         rewards.append(reward)
         if os.getenv("DEBUG_MODE") == "true":
             log_path = os.getenv("LOG_PATH")
