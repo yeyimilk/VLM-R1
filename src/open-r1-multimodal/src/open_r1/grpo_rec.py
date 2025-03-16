@@ -299,7 +299,8 @@ def count_reward(completions, solution, **kwargs):
         except Exception:
             pass  # Continue to next verification method if this fails
         
-        if reward < 0 or reward > 1000000 or reward == int.infinity:
+        
+        if not isinstance(reward, (int, float)) or reward < 0 or reward > 1000000 or math.isinf(reward):
             reward = 0.0
         
         rewards.append(reward)
