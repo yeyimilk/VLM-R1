@@ -50,6 +50,23 @@ model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
 # default processer
 processor = AutoProcessor.from_pretrained(MODEL_PATH)
 
+
+def extract_count_answer(content):
+    # Try to find the count within <answer> tags, if can not find, return -1
+    answer_tag_pattern = r'<answer>(.*?)</answer>'
+    count_pattern = r'(\d+)'
+    content_answer_match = re.search(answer_tag_pattern, content, re.DOTALL)
+    if content_answer_match:
+        content_answer = content_answer_match.group(1).strip()
+        count_match = re.search(count_pattern, content_answer)
+        if count_match:
+            try:
+                count = int(count_match.group(1))
+                return count
+            except:
+                return None
+    return None
+
 def extract_bbox_answer(content):
     # Try to find the bbox within <answer> tags, if can not find, return [0, 0, 0, 0]
     answer_tag_pattern = r'<answer>(.*?)</answer>'
@@ -83,8 +100,8 @@ for ds in TEST_DATASETS:
     ds_path = os.path.join(DATA_ROOT, f"{ds}.json")
     data = json.load(open(ds_path, "r"))
     random.shuffle(data)
-    QUESTION_TEMPLATE = "{Question} First output the thinking process in <think> </think> tags and then output the final answer in <answer> </answer> tags. Output the final answer in JSON format."
-    data = data[:sample_num]
+    QUESTION_TEMPLATE = "{Question} First output the thinking process in <think> </think> tags and then output the final answer in <answer> </answer> tags."
+    # data = data[:sample_num]
     messages = []
 
     for x in data:
@@ -140,20 +157,22 @@ for ds in TEST_DATASETS:
 
     final_output = []
     correct_number = 0
+    no_answer = 0
 
     for input_example, model_output in zip(data, all_outputs):
         original_output = model_output
         ground_truth = input_example['solution']
-        ground_truth_normalized = input_example['normalized_solution']
-        model_answer, normalized = extract_bbox_answer(original_output)
+        # ground_truth_normalized = input_example['normalized_solution']
+        # model_answer, normalized = extract_bbox_answer(original_output)
         
-        # Count correct answers
+        model_answer = extract_count_answer(original_output)
         correct = 0
         if model_answer is not None:
-            if not normalized and iou(model_answer, ground_truth) > 0.5:
+            if model_answer == ground_truth:
                 correct = 1
-            elif normalized and iou(model_answer, ground_truth_normalized) > 0.5:
-                correct = 1
+        else:
+            no_answer += 1
+        
         correct_number += correct
         
         # Create a result dictionary for this example
@@ -175,6 +194,7 @@ for ds in TEST_DATASETS:
     with open(output_path, "w") as f:
         json.dump({
             'accuracy': accuracy,
+            'no_answer': no_answer,
             'results': final_output
         }, f, indent=2)
 
