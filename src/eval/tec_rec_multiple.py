@@ -173,7 +173,7 @@ def process_model(model_info, gpu_id):
         device_map=device,  # Assign the model to the designated GPU
     )
     
-    run_datasets(processor, model, output_path)
+    run_datasets(processor, model, output_path, gpu_id)
     
     print(f"Model {model_info['folder']} at step {model_info['steps']} completed on GPU {gpu_id}.")
     print("-" * 100)
