@@ -65,7 +65,7 @@ def run_datasets(processor, model, output_path, gpu_id):
         all_outputs = []  # List to store all answers
 
         # Process data
-        for i in tqdm(range(0, len(messages), BSZ)):
+        for i in tqdm(range(0, len(messages), BSZ), 'Run for {output_path}'):
             batch_messages = messages[i:i + BSZ]
         
             # Preparation for inference
@@ -178,23 +178,22 @@ def process_model(model_info, gpu_id):
     print(f"Model {model_info['folder']} at step {model_info['steps']} completed on GPU {gpu_id}.")
     print("-" * 100)
 
-# Run models across multiple GPUs
+
 def run_parallel():
     models = get_models()
     print("Models found:", len(models))
-    
+
     num_gpus = torch.cuda.device_count()  # Get available GPUs
     print(f"Using {num_gpus} GPUs.")
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=num_gpus) as executor:
-        futures = []
-        
-        for i, model_info in enumerate(models):
-            gpu_id = i % num_gpus  # Distribute tasks across GPUs
-            futures.append(executor.submit(process_model, model_info, gpu_id))
-        
-        concurrent.futures.wait(futures)  # Wait for all tasks to complete
+    # Task queue: Each task is assigned to a specific GPU
+    task_queue = [(model, i % num_gpus) for i, model in enumerate(models)]  
 
+    # Use **ProcessPoolExecutor** to run each task as an independent process
+    with concurrent.futures.ProcessPoolExecutor(max_workers=num_gpus) as executor:
+        futures = [executor.submit(process_model, model_info, gpu_id) for model_info, gpu_id in task_queue]
+        # Wait for all tasks to complete
+        concurrent.futures.wait(futures)
 
 if __name__ == "__main__":
     run_parallel()
