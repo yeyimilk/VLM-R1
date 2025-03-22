@@ -186,14 +186,8 @@ def run_parallel():
     num_gpus = torch.cuda.device_count()  # Get available GPUs
     print(f"Using {num_gpus} GPUs.")
 
-    # Task queue: Each task is assigned to a specific GPU
-    task_queue = [(model, i % num_gpus) for i, model in enumerate(models)]  
-
-    # Use **ProcessPoolExecutor** to run each task as an independent process
-    with concurrent.futures.ProcessPoolExecutor(max_workers=num_gpus) as executor:
-        futures = [executor.submit(process_model, model_info, gpu_id) for model_info, gpu_id in task_queue]
-        # Wait for all tasks to complete
-        concurrent.futures.wait(futures)
-
+    for model_info in tqdm(models, 'Running models'):
+        process_model(model_info, 0)
+  
 if __name__ == "__main__":
     run_parallel()
